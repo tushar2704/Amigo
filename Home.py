@@ -24,6 +24,7 @@ from langchain_community.tools import DuckDuckGoSearchRun
 from crewai import Crew, Process, Agent, Task
 from langchain_community.tools import DuckDuckGoSearchRun
 search_tool = DuckDuckGoSearchRun()
+from langchain.agents import Tool
 #from src
 from src.components.navigation import *
 from src.crews.agents import *
@@ -34,7 +35,7 @@ import base64
 
 
 #Homepage
-page_config("Amigo", "🤖", "wide")
+# page_config("Amigo", "🤖", "wide")
 custom_style()
 st.logo('./src/ygbj8rv2yafx6fsnqr2w.png')
 st.sidebar.image('./src/ygbj8rv2yafx6fsnqr2w.png')
@@ -66,82 +67,135 @@ class CustomHandler(BaseCallbackHandler):
         st.session_state.messages.append({"role": self.agent_name, "content": outputs['output']})
         st.chat_message(self.agent_name).write(outputs['output'])
         
-class AdvisorCrew:
-
-    def __init__(self, origin, destination, interests , questions):
-        self.origin = origin
-        self.destination = destination
-        self.interests = interests
-        # self.problem = problem
-        self.questions = questions
-        self.answers = []
 
 
-    def ask_questions(self):
-        print("Please answer the following questions:")
-        self.answers = []  # Clear previous answers if any
-        for key, question in self.questions:
-            if isinstance(question, str):
-                answer = st.text_area(question + " ")
-
-                self.answers.append((key,answer))
-            else:
-                print("Invalid question format. Skipping question.",key)
-
-    def get_answers(self):
-        return self.answers
- 
-    def run(self):
-        agents = MoodMender()
-        tasks = PsychTasks()
-
-        syndrome_advisor_agent = agents.emotional_support()
-        cultural_advisor_agent = agents.cultural_advisor()
-        
-
-        support_task = tasks.support_task(
-        syndrome_advisor_agent,
-        self.origin,
-        self.destination,
-        # self.problem,
-        self.answers,
-        )
-        advisor_task = tasks.cultural_task(
-        cultural_advisor_agent,
-        self.origin,
-        self.destination,
-        # self.problem,
-        self.interests
+def create_crewai_setup(age, gender, disease):
+        # Define Agents
+        fitness_expert = Agent(
+            role="Fitness Expert",
+            goal=f"""Analyze the fitness requirements for a {age}-year-old {gender} with {disease} and 
+                    suggest exercise routines and fitness strategies""",
+            backstory=f"""Expert at understanding fitness needs, age-specific requirements, 
+                        and gender-specific considerations. Skilled in developing 
+                        customized exercise routines and fitness strategies.""",
+            verbose=True,
+            llm=llm,
+            allow_delegation=True,
+            tools=[search_tool],
         )
         
-        crew = Crew(
-        agents=[
-            syndrome_advisor_agent, cultural_advisor_agent
-        ],
-        tasks=[support_task, advisor_task],
-        full_output=True,
-        verbose=2,
-        output_log_file=True,
+        nutritionist = Agent(
+            role="Nutritionist",
+            goal=f"""Assess nutritional requirements for a {age}-year-old {gender} with {disease} and 
+                    provide dietary recommendations""",
+            backstory=f"""Knowledgeable in nutrition for different age groups and genders, 
+                        especially for individuals of {age} years old. Provides tailored 
+                        dietary advice based on specific nutritional needs.""",
+            verbose=True,
+            llm=llm,
+            allow_delegation=True,
+        )
+        
+        doctor = Agent(
+            role="Doctor",
+            goal=f"""Evaluate the overall health considerations for a {age}-year-old {gender} with {disease} and 
+                    provide recommendations for a healthy lifestyle.Pass it on to the
+                    disease_expert if you are not an expert of {disease} """,
+            backstory=f"""Medical professional experienced in assessing overall health and 
+                        well-being. Offers recommendations for a healthy lifestyle 
+                        considering age, gender, and disease factors.""",
+            verbose=True,
+            llm=llm,
+            allow_delegation=True,
         )
 
-        result = crew.kickoff()
-        return result
+        # Check if the person has a disease
+        if disease.lower() == "yes":
+            disease_expert = Agent(
+                role="Disease Expert",
+                goal=f"""Provide recommendations for managing {disease}""",
+                backstory=f"""Specialized in dealing with individuals having {disease}. 
+                            Offers tailored advice for managing the specific health condition.
+                            Do not prescribe medicines but only give advice.""",
+                verbose=True,
+                llm=llm,
+                allow_delegation=True,
+            )
+            disease_task = Task(
+                description=f"""Provide recommendations for managing {disease}""",
+                agent=disease_expert,
+                llm=llm
+            )
+            health_crew = Crew(
+                agents=[fitness_expert, nutritionist, doctor, disease_expert],
+                tasks=[task1, task2, task3, disease_task],
+                verbose=2,
+                process=Process.sequential,
+            )
+        else:
+            # Define Tasks without Disease Expert
+            task1 = Task(
+                description=f"""Analyze the fitness requirements for a {age}-year-old {gender}. 
+                                Provide recommendations for exercise routines and fitness strategies.""",
+                agent=fitness_expert,
+                expected_output=f"""Recommendations for exercise routines and fitness strategies.""",
+                llm=llm
+            )
 
-       
+            task2 = Task(
+                description=f"""Assess nutritional requirements for a {age}-year-old {gender}. 
+                            Provide dietary recommendations based on specific nutritional needs.
+                            Do not prescribe a medicine""",
+                agent=nutritionist,
+                expected_output=f"""Dietary recommendations based on specific nutritional needs.""",
+                llm=llm
+            )
+
+            task3 = Task(
+                description=f"""Evaluate overall health considerations for a {age}-year-old {gender}. 
+                            Provide recommendations for a healthy lifestyle.""",
+                agent=doctor,
+                llm=llm, expected_output=f"""Recommendations for a healthy lifestyle.""",
+            )
+            
+            health_crew = Crew(
+                agents=[fitness_expert, nutritionist, doctor],
+                tasks=[task1, task2, task3],
+                verbose=2,
+                process=Process.sequential,
+            )
+
+        # Create and Run the Crew
+        crew_result = health_crew.kickoff()
+
+        # Write "No disease" if the user does not have a disease
+        if disease.lower() != "yes":
+            crew_result += f"\n disease: {disease}"
+
+        return crew_result
 
 
+    
+    
 
+# Gradio interface
+def run_crewai_app():
+    st.subheader("Enter your details:")
+    age = st.text_input("Age")
+    gender = st.text_input("Gender")
+    disease = st.text_input("Do you have any specific disease? (Enter 'Yes' or 'No')")
+    
+    if st.button("Submit"):
+        if age and gender and disease:
+            crew_result = create_crewai_setup(age, gender, disease)
+            st.subheader("Health Recommendations:")
+            st.write(crew_result)
+        else:
+            st.warning("Please fill in all the fields.")
 
-
-
-
-
-
-
-
-
-
-def main():
+    
+if __name__ == "__main__":
+    
     st.title("🤖Amigo🤖")
     st.markdown('''
             <style>
@@ -156,60 +210,7 @@ def main():
         ### Your Health Care Team, powered by Gemini Pro & CrewAI & [Towards-GenAI](https://github.com/Towards-GenAI)
         """
     )
-    
-    with st.container():
-        st.header("👇 Enter your trip details")
-        with st.form("my_form"):
-            origin = st.text_input("Where are you from?")
-                
-            destination = st.text_input("Where are you currently in Paris?")
-                
-            interests = st.text_area("What are your interests?")
-            
-            questions = [
-                        ("expectations","What were your expectations of Paris before you arrived? Were there specific places or experiences you were looking forward to in Paris?"),
-                        ("experiences","How have your experiences in Paris differed from your expectations? Can you describe specific incidents or aspects of Paris that have been disappointing or distressing?"),
-                        ("emotional_state","How are you feeling emotionally and mentally during your visit to Paris? Have you experienced symptoms like anxiety, depression, or disorientation since arriving in Paris?"),
-                        ("social_interactions","How have your interactions with locals and other tourists been? Have you faced any language barriers or cultural misunderstandings?"),
-                        ("coping_strategies","How are you currently coping with your feelings of disappointment or distress? Are there any activities or places in Paris that have helped improve your mood or alleviate stress?"),
-                        ("support_systems","Do you have friends, family, or acquaintances in Paris you can talk to about your feelings? Are you in contact with any mental health professionals or support groups?"),
-                        ("duration","How long do you plan to stay in Paris? Do you have any flexibility in your travel plans to visit other places or change your itinerary?"),
-                        ("health_safety","Have you sought any medical or psychological assistance since experiencing these feelings? Do you feel safe and secure in your current accommodation and surroundings?"),
-                        ("reflection","Looking back, is there anything you think could have prepared you better for this trip? What advice would you give to someone planning a trip to Paris to help them set realistic expectations?"),
-                        ("personal_background","Is this your first time traveling abroad, or have you had similar experiences in other destinations? Can you share a bit about your general travel preferences and past travel experiences?"),
-                    
-                    ]
-            advisor_crew = AdvisorCrew(origin, destination, interests, questions)
-            advisor_crew.ask_questions()
-            answers = advisor_crew.get_answers()
-            # Count the number of tuples with non-empty second elements
-            count_non_empty = sum(1 for key, value in answers if value)
-            submitted = st.form_submit_button("Submit")
-
-            
-    # Check if any user input is empty before setting submitted
-    
-    
-    if submitted and all([origin, destination, interests]) and count_non_empty >= 6:
-        
-        with st.status("🤖 **Agents at work...**", state="running", expanded=True) as status:
-            with st.container(height=500, border=False):
-                result = advisor_crew.run()
-            status.update(label="✅ Advice is ready!",
-                        state="complete", expanded=False)
-
-        st.subheader("Here is the advice", anchor=False, divider="rainbow")
-        
-        task_outputs = result.get('tasks_outputs', [])
-        headers = ['Mental Health Advice','Cultural Awareness']
-        # Loop through each TaskOutput and display information
-        for header, task_output in zip(headers, task_outputs):
-            with st.expander(header):
-                st.write(f"{task_output.raw_output}")
-    
-    
-if __name__ == "__main__":
-    main()
+    run_crewai_app()
     with st.sidebar:
         footer()
 
